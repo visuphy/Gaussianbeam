@@ -125,7 +125,7 @@ const CanvasController = (() => {
 
         if (plotWidth <= 0 || plotHeight <= 0) return null; // Invalid dimensions
 
-        const zMin_mm = simulationDataCache.z[0];
+        const zMin_mm  = simulationDataCache.z[0];
         const zMax_mm = simulationDataCache.z[simulationDataCache.z.length - 1];
         const zRange_mm = zMax_mm - zMin_mm;
 
@@ -468,6 +468,35 @@ const CanvasController = (() => {
             // Check if element is within visible plot area
             if (isFinite(x) && x >= margin.left - 1 && x <= margin.left + plotWidth + 1) {
                 const elementType = element.type;
+
+// Special case: draw dielectric slab with its physical thickness
+if (elementType === 'slab_dielectric') {
+    const width_mm = (element.property && typeof element.property.width_mm === 'number') ? element.property.width_mm : 0;
+    const width_px = Math.max(1, Math.round(width_mm * (params.scaleX || 0)));
+    const x_left = x;
+    const x_right = x_left + width_px;
+    ctx.beginPath();
+    ctx.rect(x_left, y1_draw, width_px, symbolDrawHeight);
+    // Fill and stroke
+    ctx.fillStyle = DRAW_CONSTANTS.COLOR_ELEMENT_FILL;
+    ctx.fill();
+    ctx.strokeStyle = DRAW_CONSTANTS.COLOR_ELEMENT_STROKE;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Label centered over the slab
+    ctx.fillStyle = DRAW_CONSTANTS.COLOR_ELEMENT_LABEL;
+    const label = `${formatElementType(elementType)} ${index + 1}`;
+    const labelY = Math.min(y1_draw - 3, margin.top + plotHeight);
+    ctx.fillText(label, x_left + width_px / 2, labelY);
+    // Update hit rect to cover the slab width (plus tolerance at edges)
+    element.canvasRect = {
+        x: Math.min(x_left, x_right) - DRAW_CONSTANTS.ELEMENT_HIT_TOLERANCE_PX,
+        y: y1_draw,
+        w: Math.abs(x_right - x_left) + DRAW_CONSTANTS.ELEMENT_HIT_TOLERANCE_PX * 2,
+        h: symbolDrawHeight
+    };
+    return; // Done for slab; proceed to next element
+}
                 const f_mm = element.property?.f_mm; // Check lens focal length
                 let isLens = elementType === 'lens' && typeof f_mm === 'number' && isFinite(f_mm);
                 const halfSymbolWidth = DRAW_CONSTANTS.LENS_SYMBOL_WIDTH_PX / 2;

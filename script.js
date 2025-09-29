@@ -14,7 +14,8 @@
         lambda_nm: 1064,
         M2: 1.0,
         n: 1.0, // Base refractive index n1
-        plotRangeZ_mm: 500
+        plotRangeZ_mm: 500,
+        z_min_mm: -20
     };
     let opticalElements = []; // { type, position_mm, property: {..}, id }
     let latestPlotData = null; // Cache for canvas and export
@@ -288,9 +289,13 @@
                 min_element_pos_m = Math.min(min_element_pos_m, opticalElements[0].position_mm / 1000.0);
             }
             // Ensure simulation starts reasonably before the initial waist or first element
-            const typical_zR_display = Math.max(initial_zR_M2_m, 0.01); // Avoid zero or negative zR for range calc
-            const simulation_start_z_m = Math.min(0, z0_m - typical_zR_display * 2, min_element_pos_m - typical_zR_display * 0.5);
-            const simulation_end_z_m = plot_end_z_m;
+            
+const typical_zR_display = Math.max(initial_zR_M2_m, 0.01); // Avoid zero or negative zR for range calc
+// If user provided z_min_mm, use it; otherwise, fall back to heuristic
+const user_start_m = (typeof beamParams.z_min_mm === 'number' && isFinite(beamParams.z_min_mm)) ? (beamParams.z_min_mm / 1000.0) : null;
+const simulation_start_z_m = (user_start_m !== null) ? user_start_m : Math.min(0, z0_m - typical_zR_display * 2, min_element_pos_m - typical_zR_display * 0.5);
+const simulation_end_z_m = plot_end_z_m;
+
 
 
             // 5. Calculate Initial q
@@ -359,9 +364,18 @@
                 // B. Apply the element's transformation
                 // n1_base_medium_idx is passed for context, e.g. for dielectric slab effective B calculation
                 const M_element = getElementMatrix(element, n1_base_medium_idx);
-                q_current = transformQ(q_current, M_element);
+                
+q_current = transformQ(q_current, M_element);
 
-                // C. Calculate output beam parameters (new physical waist, new zR_M2, new theta_M2)
+                
+                // If this is a slab, advance the physical position by its actual thickness.
+                if (element.type === 'slab_dielectric') {
+                    const W_m = (element.property && typeof element.property.width_mm === 'number') ? (element.property.width_mm / 1000.0) : 0.0;
+                    if (W_m > 0) {
+                        z_current_m += W_m;
+                    }
+                }
+// C. Calculate output beam parameters (new physical waist, new zR_M2, new theta_M2)
                 const { w0_m: w0_actual_new_m, z_waist_rel_m: z_waist_rel_new_m, zR_m: zR_M2_new_m, theta_rad: theta_M2_new_rad } = findWaistFromQ(q_current, lambda_vac_m, n1_base_medium_idx, M2_factor);
                 const waist_abs_pos_m = z_current_m + z_waist_rel_new_m; 
 
@@ -535,7 +549,12 @@
             propCell.appendChild(document.createTextNode('Plot End Z='));
             propCell.appendChild(createTableInput('initial', 'plotRangeZ_mm', beamParams.plotRangeZ_mm, 'any', null, "Max z-position for plots (mm)."));
             propCell.appendChild(document.createTextNode('mm'));
-        } else {
+        
+propCell.appendChild(document.createElement('br'));
+propCell.appendChild(document.createTextNode('Plot Start Z='));
+propCell.appendChild(createTableInput('initial', 'z_min_mm', beamParams.z_min_mm, 'any', null, "Start z-position for plots (mm)."));
+propCell.appendChild(document.createTextNode('mm'));
+} else {
             const element = opticalElements.find(el => el.id === item.id);
             if (element && element.property) {
                 try {
@@ -628,6 +647,7 @@
             if (propertyName === 'M2' || propertyName === 'n') parsedValue = 1.0;
             else if (propertyName === 'lambda_nm') parsedValue = beamParams.lambda_nm || 1064;
             else if (propertyName === 'plotRangeZ_mm') parsedValue = beamParams.plotRangeZ_mm || 500;
+            else if (propertyName === 'z_min_mm') parsedValue = beamParams.z_min_mm ?? -20;
             else parsedValue = 0;
         }
         if (minValue !== null && parsedValue < minValue) {
