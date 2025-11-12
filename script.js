@@ -200,17 +200,15 @@
     const thinLensMatrix = (f_m) => f_m === 0 ? identityMatrix() : [[1, 0], [-1 / f_m, 1]];
     const sphericalMirrorMatrix = (R_m) => R_m === 0 ? identityMatrix() : [[1, 0], [-2.0 / R_m, 1]];
     const flatMirrorMatrix = () => identityMatrix();
+    const flatInterfaceMatrix = (n_from, n_to) => [[1, 0], [0, n_from / n_to]]; // ** NEW **
     const dielectricSlabMatrix = (n1_base, n2_over_n1_ratio, width_m) => {
-        // The q-parameter propagation already accounts for base refractive index n1_base.
-        // The matrix for a slab embedded in a medium n1, with slab index n2, and thickness W is:
-        // A=1, B=W/n_ratio_slab_to_embedding = W / (n2/n1) , C=0, D=1
-        // Here, n2_over_n1_ratio is n_slab / n_base_medium.
+        // This function is no longer used by the main simulation loop for slabs,
+        // but is kept for potential other uses or reference. The main loop
+        // now uses flatInterfaceMatrix and free-space propagation.
         if (n2_over_n1_ratio <= 0) {
             console.warn("Invalid n ratio for dielectric slab:", n2_over_n1_ratio);
             return identityMatrix();
         }
-        // The effective B for ABCD matrix operating on q (which is defined using lambda_vac/n_base)
-        // is physical_width / (n_slab/n_base)
         const B_eff_m = width_m / n2_over_n1_ratio;
         return [[1, B_eff_m], [0, 1]];
     };
@@ -222,8 +220,7 @@
             case 'lens':             return thinLensMatrix(props.f_mm / 1000.0);
             case 'mirror_spherical': return sphericalMirrorMatrix(props.R_mm / 1000.0);
             case 'mirror_flat':      return flatMirrorMatrix();
-            // Pass n1_base to slab_dielectric for clarity, though it might not directly use it if n_ratio is n_slab/n_base
-            case 'slab_dielectric':  return dielectricSlabMatrix(n1_base, props.n_ratio, props.width_mm / 1000.0);
+            case 'slab_dielectric':  return identityMatrix(); // Handled separately in the main loop
             case 'abcd_generic':     return genericABCDMatrix(props.A, props.B_mm / 1000.0, props.C_perm * 1000.0, props.D);
             default:
                 console.warn("Unknown element type:", element.type);
@@ -288,15 +285,10 @@
             if (opticalElements.length > 0 && !isNaN(opticalElements[0].position_mm)) {
                 min_element_pos_m = Math.min(min_element_pos_m, opticalElements[0].position_mm / 1000.0);
             }
-            // Ensure simulation starts reasonably before the initial waist or first element
-            
-const typical_zR_display = Math.max(initial_zR_M2_m, 0.01); // Avoid zero or negative zR for range calc
-// If user provided z_min_mm, use it; otherwise, fall back to heuristic
-const user_start_m = (typeof beamParams.z_min_mm === 'number' && isFinite(beamParams.z_min_mm)) ? (beamParams.z_min_mm / 1000.0) : null;
-const simulation_start_z_m = (user_start_m !== null) ? user_start_m : Math.min(0, z0_m - typical_zR_display * 2, min_element_pos_m - typical_zR_display * 0.5);
-const simulation_end_z_m = plot_end_z_m;
-
-
+            const typical_zR_display = Math.max(initial_zR_M2_m, 0.01); // Avoid zero or negative zR for range calc
+            const user_start_m = (typeof beamParams.z_min_mm === 'number' && isFinite(beamParams.z_min_mm)) ? (beamParams.z_min_mm / 1000.0) : null;
+            const simulation_start_z_m = (user_start_m !== null) ? user_start_m : Math.min(0, z0_m - typical_zR_display * 2, min_element_pos_m - typical_zR_display * 0.5);
+            const simulation_end_z_m = plot_end_z_m;
 
             // 5. Calculate Initial q
             const dist_from_waist_to_start = simulation_start_z_m - z0_m;
@@ -309,13 +301,11 @@ const simulation_end_z_m = plot_end_z_m;
             const N_POINTS_PER_SEGMENT = 100;
             let last_z_plotted_mm = simulation_start_z_m * 1000 - 1;
 
-            // Add initial beam parameters to table
             tableData.push({
                 opticType: "Input Beam", position_mm: beamParams.z0_mm, rel_pos_mm: null,
-                waist_um: beamParams.w0_um, waist_pos_mm: beamParams.z0_mm, // Displaying input physical waist
+                waist_um: beamParams.w0_um, waist_pos_mm: beamParams.z0_mm,
                 zR_mm: initial_zR_M2_m * 1000.0, theta_mrad: initial_theta_M2_rad * 1000.0, id: 'initial'
             });
-            // For waist marker, w is physical waist radius in meters
             plotData.waistMarkers.push({ z: z0_m, w: w0_input_m, label: `Waist 0 (${(z0_m * 1000).toFixed(1)}mm)` });
 
 
@@ -333,21 +323,20 @@ const simulation_end_z_m = plot_end_z_m;
                 const dist_to_element_m = element_pos_m - z_current_m;
 
                 // A. Propagate free space *before* the element
-                if (dist_to_element_m > 1e-12) { // Check for significant positive distance
+                if (dist_to_element_m > 1e-12) {
                     for (let i = 1; i <= N_POINTS_PER_SEGMENT; i++) {
                         const z_step_rel = dist_to_element_m * (i / N_POINTS_PER_SEGMENT);
                         const q_step = complexAdd(q_current, complex(z_step_rel, 0));
                         
-                        // calculateWR returns w_calc = w_actual_at_z / sqrt(M2_factor)
                         const { w_m: w_calc, R_m } = calculateWR(q_step, lambda_in_base_medium_m);
-                        const w_actual_at_z_m = w_calc * Math.sqrt(M2_factor); // Correct to physical radius
+                        const w_actual_at_z_m = w_calc * Math.sqrt(M2_factor);
 
                         const z_abs_m = z_current_m + z_step_rel;
                         const z_abs_mm = z_abs_m * 1000.0;
 
                         if (z_abs_mm > last_z_plotted_mm + 1e-9 && z_abs_m <= simulation_end_z_m + 1e-9) {
                             plotData.z.push(z_abs_mm);
-                            plotData.w.push(w_actual_at_z_m * 1e6); // Store physical radius in um
+                            plotData.w.push(w_actual_at_z_m * 1e6);
                             plotData.R.push(isFinite(R_m) ? R_m * 1000.0 : (R_m > 0 ? Infinity : -Infinity));
                             last_z_plotted_mm = z_abs_mm;
                         }
@@ -362,20 +351,61 @@ const simulation_end_z_m = plot_end_z_m;
                 }
 
                 // B. Apply the element's transformation
-                // n1_base_medium_idx is passed for context, e.g. for dielectric slab effective B calculation
-                const M_element = getElementMatrix(element, n1_base_medium_idx);
-                
-q_current = transformQ(q_current, M_element);
-
-                
-                // If this is a slab, advance the physical position by its actual thickness.
                 if (element.type === 'slab_dielectric') {
-                    const W_m = (element.property && typeof element.property.width_mm === 'number') ? (element.property.width_mm / 1000.0) : 0.0;
-                    if (W_m > 0) {
+                    // ** NEW: DETAILED SLAB HANDLING **
+                    const props = element.property;
+                    const W_m = (props && typeof props.width_mm === 'number') ? (props.width_mm / 1000.0) : 0.0;
+                    const n_ratio = (props && typeof props.n_ratio === 'number') ? props.n_ratio : 1.0;
+                    
+                    if (W_m > 0 && n_ratio > 0) {
+                        const n2_medium_idx = n1_base_medium_idx * n_ratio;
+                        const lambda_in_slab_medium_m = lambda_vac_m / n2_medium_idx;
+
+                        // 1. Enter the slab interface
+                        const M_enter = flatInterfaceMatrix(n1_base_medium_idx, n2_medium_idx);
+                        q_current = transformQ(q_current, M_enter);
+                        plotData.elementMarkers.push({ z: z_current_m, label: `Slab ${index + 1} Start` });
+
+                        // 2. Propagate *through* the slab, plotting points inside
+                        for (let i = 1; i <= N_POINTS_PER_SEGMENT; i++) {
+                            const z_step_rel = W_m * (i / N_POINTS_PER_SEGMENT);
+                            const q_step = complexAdd(q_current, complex(z_step_rel, 0));
+                            
+                            // Use the SLAB's internal wavelength for this calculation
+                            const { w_m: w_calc, R_m } = calculateWR(q_step, lambda_in_slab_medium_m);
+                            const w_actual_at_z_m = w_calc * Math.sqrt(M2_factor);
+
+                            const z_abs_m = z_current_m + z_step_rel;
+                            const z_abs_mm = z_abs_m * 1000.0;
+
+                            if (z_abs_mm > last_z_plotted_mm + 1e-9 && z_abs_m <= simulation_end_z_m + 1e-9) {
+                                plotData.z.push(z_abs_mm);
+                                plotData.w.push(w_actual_at_z_m * 1e6);
+                                plotData.R.push(isFinite(R_m) ? R_m * 1000.0 : (R_m > 0 ? Infinity : -Infinity));
+                                last_z_plotted_mm = z_abs_mm;
+                            }
+                        }
+                        // Update q and z to be at the exit face of the slab
+                        q_current = complexAdd(q_current, complex(W_m, 0));
                         z_current_m += W_m;
+
+                        // 3. Exit the slab interface
+                        const M_exit = flatInterfaceMatrix(n2_medium_idx, n1_base_medium_idx);
+                        q_current = transformQ(q_current, M_exit);
+                        plotData.elementMarkers.push({ z: z_current_m, label: `Slab ${index + 1} End` });
+
+                    } else {
+                         // If slab has zero width or invalid ratio, treat as identity.
+                         plotData.elementMarkers.push({ z: z_current_m, label: `${formatElementType(element.type)} ${index + 1}` });
                     }
+                } else {
+                    // ** ORIGINAL HANDLING FOR OTHER ELEMENTS **
+                    const M_element = getElementMatrix(element, n1_base_medium_idx);
+                    q_current = transformQ(q_current, M_element);
+                    plotData.elementMarkers.push({ z: element_pos_m, label: `${formatElementType(element.type)} ${index + 1}` });
                 }
-// C. Calculate output beam parameters (new physical waist, new zR_M2, new theta_M2)
+                
+                // C. Calculate output beam parameters after the element interaction
                 const { w0_m: w0_actual_new_m, z_waist_rel_m: z_waist_rel_new_m, zR_m: zR_M2_new_m, theta_rad: theta_M2_new_rad } = findWaistFromQ(q_current, lambda_vac_m, n1_base_medium_idx, M2_factor);
                 const waist_abs_pos_m = z_current_m + z_waist_rel_new_m; 
 
@@ -384,15 +414,13 @@ q_current = transformQ(q_current, M_element);
                 tableData.push({
                     opticType: formatElementType(element.type), position_mm: element.position_mm, rel_pos_mm: rel_pos_mm,
                     properties: formatElementProperties(element), 
-                    waist_um: w0_actual_new_m * 1e6, // Store physical waist in um
+                    waist_um: w0_actual_new_m * 1e6,
                     waist_pos_mm: waist_abs_pos_m * 1000.0,
                     zR_mm: zR_M2_new_m * 1000.0, theta_mrad: theta_M2_new_rad * 1000.0, id: element.id
                 });
 
-                // E. Add markers for plots (element z in m, waist w in m)
-                plotData.elementMarkers.push({ z: element_pos_m, label: `${formatElementType(element.type)} ${index + 1}` });
+                // E. Add waist markers for plots
                 plotData.waistMarkers.push({ z: waist_abs_pos_m, w: w0_actual_new_m, label: `Waist ${index + 1}` });
-
 
                 // F. Update position tracker for next relative calculation
                 previous_element_pos_m = element_pos_m;
@@ -405,16 +433,15 @@ q_current = transformQ(q_current, M_element);
                     const z_step_rel = final_dist_m * (i / N_POINTS_PER_SEGMENT);
                     const q_step = complexAdd(q_current, complex(z_step_rel, 0));
                     
-                    // calculateWR returns w_calc = w_actual_at_z / sqrt(M2_factor)
                     const { w_m: w_calc, R_m } = calculateWR(q_step, lambda_in_base_medium_m);
-                    const w_actual_at_z_m = w_calc * Math.sqrt(M2_factor); // Correct to physical radius
+                    const w_actual_at_z_m = w_calc * Math.sqrt(M2_factor);
 
                     const z_abs_m = z_current_m + z_step_rel;
                     const z_abs_mm = z_abs_m * 1000.0;
 
                     if (z_abs_mm > last_z_plotted_mm + 1e-9 && z_abs_m <= simulation_end_z_m + 1e-9) {
                         plotData.z.push(z_abs_mm);
-                        plotData.w.push(w_actual_at_z_m * 1e6); // Store physical radius in um
+                        plotData.w.push(w_actual_at_z_m * 1e6);
                         plotData.R.push(isFinite(R_m) ? R_m * 1000.0 : (R_m > 0 ? Infinity : -Infinity));
                         last_z_plotted_mm = z_abs_mm;
                     }
