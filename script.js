@@ -638,7 +638,16 @@ propCell.appendChild(document.createTextNode('mm'));
 
         // --- Waist Pos, Rayleigh, Divergence Cells ---
         row.insertCell().textContent = formatTableValue(item.waist_pos_mm, 2, 4);
-        row.insertCell().textContent = formatTableValue(item.zR_mm, 2, 4);
+        
+        // --- Modified Rayleigh Range Cell (Editable for Input Beam) ---
+        const zRCell = row.insertCell();
+        if (item.id === 'initial') {
+            // Make Rayleigh range editable for the input beam
+            zRCell.appendChild(createTableInput('initial', 'zR_mm_input', item.zR_mm, 0.1, 0.001, "Rayleigh Range (mm). Editing this updates the Waist Radius."));
+        } else {
+            zRCell.textContent = formatTableValue(item.zR_mm, 2, 4);
+        }
+
         row.insertCell().textContent = formatTableValue(item.theta_mrad, 2, 4);
 
         // --- Action Cell ---
@@ -665,6 +674,7 @@ propCell.appendChild(document.createTextNode('mm'));
             case 'n': case 'n_ratio': precision = 2; break;
             case 'C_perm': precision = 4; break;
             case 'w0_um': case 'lambda_nm': precision = 1; break; 
+            case 'zR_mm_input': precision = 2; break; // New case for Rayleigh Input
             default: precision = allowsDecimals ? 2 : 0; break;
         }
         input.precision = precision; 
@@ -1173,6 +1183,34 @@ propCell.appendChild(document.createTextNode('mm'));
         if (id === 'initial') {
             if (propertyToChange in beamParams) {
                 beamParams[propertyToChange] = newValue;
+            } else if (propertyToChange === 'zR_mm_input') {
+                // ** Handle User Edit of Rayleigh Range **
+                // Users cannot set Rayleigh range independently without changing w0 (assuming lambda/M2 fixed).
+                // Logic: Calculate required w0 to achieve this Rayleigh Range and update w0.
+                
+                const zR_mm = newValue;
+                if (zR_mm <= 0) {
+                    alert("Rayleigh range must be positive.");
+                    resetInputValueOnError(target, id, 'zR_mm_input');
+                    return;
+                }
+
+                // Physics: zR = (PI * w0^2 * n) / (lambda_vac * M2)
+                // Inverse: w0^2 = (zR * lambda_vac * M2) / (PI * n)
+                const zR_m = zR_mm / 1000.0;
+                const lambda_vac_m = beamParams.lambda_nm / 1e9;
+                const n = beamParams.n;
+                const M2 = beamParams.M2;
+
+                const w0_sq = (zR_m * lambda_vac_m * M2) / (PI * n);
+                const w0_m = Math.sqrt(w0_sq);
+                
+                // Update the source of truth (w0_um)
+                beamParams.w0_um = w0_m * 1e6; 
+                
+                // Note: We don't need to set zR manually in beamParams as it's a derived value.
+                // The simulation re-run will update the table display.
+                
             } else {
                 console.warn("Attempted to edit unknown beam parameter:", propertyToChange); return;
             }
@@ -1245,7 +1283,17 @@ propCell.appendChild(document.createTextNode('mm'));
     function resetInputValueOnError(targetInputElement, elementId, propertyName) {
          let originalValue;
          if (elementId === 'initial') {
-             originalValue = beamParams[propertyName];
+             if (propertyName === 'zR_mm_input') {
+                 // Recalculate current zR from existing w0
+                 const w0_m = beamParams.w0_um / 1e6;
+                 const lambda_vac_m = beamParams.lambda_nm / 1e9;
+                 const n = beamParams.n;
+                 const M2 = beamParams.M2;
+                 const { zR_m } = calculateBeamDerivedParams(w0_m, lambda_vac_m, n, M2);
+                 originalValue = zR_m * 1000.0;
+             } else {
+                 originalValue = beamParams[propertyName];
+             }
          } else {
               const element = opticalElements.find(el => el.id === elementId);
               if (element) {
